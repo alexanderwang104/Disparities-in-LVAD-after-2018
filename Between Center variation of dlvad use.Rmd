@@ -1048,7 +1048,7 @@ adi_min_estimate = ggplot(prediction_adi_min, aes(x = period, y = Predicted, col
   ylim(0.1, 0.31)+
   labs(
     x = "",
-    y = "Predicted Probability of d-LVAD at Listing",
+    y = "Predicted Probability of LVAD at Listing",
     title = "Unadjusted"
   ) +
   scale_colour_viridis_d()+
@@ -1113,7 +1113,7 @@ adi_full_sens_estimate = ggplot(prediction_adi_full_sens, aes(x = period, y = Pr
   ylim(0.1, 0.31)+
   labs(
     x = "",
-    y = "Predicted Probability of d-LVAD at Listing",
+    y = "Predicted Probability of LVAD at Listing",
     color = "Candidate ADI Decile",
     title = "Fully Adjusted"
   ) +
