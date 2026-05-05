@@ -98,8 +98,10 @@ cand_thor = cand_thor |>
                         '212', '213', '214', '223', '224', '233', '236', 
                         '239', '240', '312', '313', '314', '315', '316', '319', '322', 
                         '327', '330', '333', '334'),
-        1, 0)) |> 
-  relocate(dlvad)
+        1, 0),
+  #HVAD, HM2, HM3
+  cont_flow_dlvad = ifelse(CAN_VAD1 %in% c("224", "316", "205", "236", "313", "330") | CAN_VAD2 %in% c("224", "316", "205", "236", "313", "330"), 1, 0)) |> 
+  relocate(dlvad, cont_flow_dlvad)
 ```
 
 ```{r}
@@ -220,38 +222,70 @@ cand_thor <- bind_rows(single_registrations %>% ungroup(),
 cand_thor %>% filter(is.na(CAN_LISTING_DT))
 ```
 
+
 ## Loading ADI and Assigning to ZIP
 ```{r}
-ADI2023 <- read_csv("2023_ADI_11_FIPS.csv")
-ADI_crosswalk <-read_excel("11_digit_FIPS_to_ZIP_crosswalk.xlsx")
-
-ADI2023$FIPS_11_digit <- substr(ADI2023$FIPS, 1, 11) 
-ADI2023 <- left_join(ADI2023,
-                 dplyr::select(ADI_crosswalk, TRACT, ZIP), 
-                 by = c("FIPS_11_digit" = "TRACT") )
-ADI2023 <- ADI2023 |> 
-  group_by(ZIP) |> 
-  mutate(mean_adi = mean(as.numeric(ADI_NATRANK), na.rm = TRUE))
-ADI2023 |> 
-  dplyr::select(ZIP,  ADI_NATRANK, mean_adi) |> 
-  slice_head(n = 10)
-ADI2023 <- distinct(ADI2023, ZIP, .keep_all = TRUE)
-rm(ADI_crosswalk)
-
-
 cand_zip <- read_sas("canzip2506.sas7bdat", NULL)
 cand_zip$ZIP = substr(cand_zip$CAN_PERM_ZIP,1,5)
-cand_zip <- left_join(cand_zip, dplyr::select(ADI2023, mean_adi, ZIP), by = c("ZIP" = "ZIP"))
-rm(list = c("ADI2023"))
 
-slice_head(cand_zip,n= 5)
+ADI2023 <- read_csv("2023_ADI_11_FIPS.csv")
+ADI2020 <- read_csv("2020_ADI_FIPS.csv")
+ADI2015 <- read_csv("2015_ADI_FIPS.csv") |> 
+  dplyr::select(-FIPS)
+ADI2015 <- left_join(ADI2015, dplyr::select(ADI2023, GISJOIN, FIPS), by = "GISJOIN")
+
+
+ADI_crosswalk_2023 <-read_excel("11_digit_FIPS_to_ZIP_crosswalk.xlsx")
+ADI_crosswalk_2020 <-read_excel("TRACT_ZIP_122020.xlsx")
+ADI_crosswalk_2015 <-read_excel("tract_zip_122015.xlsx")
+
+
+assign_adi <- function(adi, crosswalk) {
+  adi$FIPS_11_digit <- substr(adi$FIPS, 1, 11)
+  adi <- left_join(adi,
+                   dplyr::select(crosswalk, TRACT, ZIP),
+                   by = c("FIPS_11_digit" = "TRACT"))
+  adi = adi |> 
+    group_by(ZIP) |> 
+    mutate(mean_adi = mean(as.numeric(ADI_NATRANK), na.rm = TRUE)) |> 
+    ungroup() |> 
+    distinct(ZIP, .keep_all = TRUE)
+
+return(as.data.frame(adi))
+
+}
+
+ADI2023 = assign_adi(ADI2023, ADI_crosswalk_2023)
+ADI2020 = assign_adi(ADI2020, ADI_crosswalk_2020)
+ADI2015 = assign_adi(ADI2015, ADI_crosswalk_2015)
+
+rm(list = c("ADI_crosswalk_2023", "ADI_crosswalk_2020", "ADI_crosswalk_2015"))
+
+cand_zip = left_join(cand_zip, dplyr::select(cand_thor, PX_ID, CAN_LISTING_DT), by = "PX_ID")
+cand_zip <- left_join(cand_zip, dplyr::select(ADI2023, mean_adi, ZIP), by = c("ZIP" = "ZIP")) |> 
+  rename(adi_2023 = mean_adi)
+cand_zip <- left_join(cand_zip, dplyr::select(ADI2020, mean_adi, ZIP), by = c("ZIP" = "ZIP")) |> 
+  rename(adi_2020 = mean_adi)
+cand_zip <- left_join(cand_zip, dplyr::select(ADI2015, mean_adi, ZIP), by = c("ZIP" = "ZIP")) |> 
+  rename(adi_2015 = mean_adi)
+cand_zip = cand_zip |> 
+  mutate(listing_year = year(CAN_LISTING_DT),
+         mean_adi = case_when(
+           listing_year %in% c(2014,2015) ~ adi_2015,
+           listing_year %in% c(2016, 2017, 2018, 2019) ~ adi_2020,
+           listing_year %in% c(2020,2021,2022, 2023,2024) ~ adi_2023
+         ))
+rm(list = c("ADI2023", "ADI2020", "ADI2015"))
+
+
 
 cand_thor <- left_join(cand_thor,
                     dplyr::select(cand_zip,PX_ID, mean_adi), 
                     by = c("PX_ID" = "PX_ID"))
 
 cand_thor <- cand_thor %>%
-  mutate(mean_adi = as.numeric(as.character(mean_adi))) 
+  mutate(mean_adi = as.numeric(as.character(mean_adi)),
+         missing_adi = ifelse(is.na(mean_adi), 1,0)) 
 
 cand_thor2 <- cand_thor
 
@@ -276,6 +310,30 @@ cand_thor <- cand_thor %>%
   mutate(adi_decile_factor = cut(mean_adi,c(-Inf, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100), labels = c("1st Decile", "2nd Decile", "3rd Decile", "4th Decile", "5th Decile", "6th Decile", "7th Decile", "8th Decile", "9th Decile", "10th Decile")))
 cand_thor <- cand_thor |> 
   mutate(adi_decile_num = as.numeric(adi_decile_factor))
+```
+
+## Varible to incidate pre and post policy cohort
+
+Separated into pre and post 2018 policy cohorts
+
+```{r cars}
+cand_thor = cand_thor |> 
+  mutate(
+    policy_period = case_when(
+      CAN_LISTING_DT < mdy("10-18-2018") & CAN_LISTING_DT >= mdy("01-01-2014") ~ "Pre Policy",
+      CAN_LISTING_DT >= mdy("10-18-2018") & CAN_LISTING_DT <= as.Date("2024-12-31") ~ "Post Policy"
+    ),
+    policy_period = fct_rev(policy_period)) |> #Reverse order to allow pre to be before post
+  group_by(CAN_LISTING_CTR_CD, policy_period) |>
+  mutate(num_transplants = sum(!is.na(REC_TX_DT) | !is.na(PERS_NEXTTX))) |> 
+  ungroup() |> 
+  group_by(CAN_LISTING_CTR_CD) |> 
+  mutate(
+    eligibility = ifelse(sum(policy_period == "Pre Policy") <1, "Center with no candidates listed in pre-policy period", NA),
+    num_transplants_total = sum(!is.na(REC_TX_DT) | !is.na(PERS_NEXTTX)),
+    ctr_adi_total = mean(mean_adi)
+  )
+  
 ```
 
 ```{r}
@@ -303,12 +361,13 @@ cand_thor <- cand_thor |>
     CAN_EDUCATION == 998 ~ "Unknown",
     TRUE ~ "Other"),
   can_race = case_when(
-    CAN_RACE == "8" ~ "White",
-    CAN_RACE == "16" ~ "Black or African American",
-    CAN_RACE == "32" ~ "American Indian or Alaska Native",
-    CAN_RACE == "64" ~ "Asian",
-    CAN_RACE == "128" ~ "Native Hawaiian or Other Pacific Islander",
+    CAN_RACE == "8" | CAN_RACE_SRTR == "WHITE" ~ "White",
+    CAN_RACE == "16" | CAN_RACE_SRTR == "BLACK" ~ "Black or African American",
+    CAN_RACE == "32" | CAN_RACE_SRTR == "NATIVE" ~ "American Indian or Alaska Native",
+    CAN_RACE == "64" | CAN_RACE_SRTR == "ASIAN" ~ "Asian",
+    CAN_RACE == "128" | CAN_RACE_SRTR == "PACIFIC" ~ "Native Hawaiian or Other Pacific Islander",
     CAN_RACE == "256" ~ "Arab or Middle Eastern",
+    CAN_RACE_SRTR == "MULTI" ~ "Multiracial",
     .default = "Other"),
     ethnicity = case_when(
       CAN_ETHNICITY_SRTR == "NLATIN" ~ "Not Latinx",
@@ -323,57 +382,48 @@ cand_thor <- cand_thor |>
                                       "Ischemic cardiomyopathy", 
                                       "Restrictive cardiomyopathy", 
                                       "Other")
-                     )
-  )
-
-
+                     ),
+  blood_type = case_when(
+    CAN_ABO %in% c("A", "A1", "A2") ~ "A",
+    CAN_ABO %in% c("A1B", "A2B", "AB") ~ "AB",
+    CAN_ABO == "B" ~ "B",
+    CAN_ABO == "O" ~ "O"),
+  blood_type = factor(blood_type,
+                      levels = c("O", "A", "AB", "B")),
+    initial_status = case_when(
+           (CAN_INIT_STAT %in% c('1010', '1020', '1090', '1110', '2010', '2020', '2090', '2110', '3010', '6010', '6011', '6012', '9010') & policy_period == "Post Policy") ~ "Status 1",
+           CAN_INIT_STAT %in% c('1030', '1120', '2030', '2120', '6002', '6020', '6030', '9020') & policy_period == "Post Policy" ~ "Status 2",
+           (CAN_INIT_STAT %in% c('1130', '2130', '6040') & policy_period == "Post Policy") ~ "Status 3",
+           (CAN_INIT_STAT %in% c('1140', '2140', '6004') & policy_period == "Post Policy") ~ "Status 4",
+           (CAN_INIT_STAT %in% c('1150', '2150') & policy_period == "Post Policy") ~ "Status 5",
+           (CAN_INIT_STAT %in% c('1160', '2160') & policy_period == "Post Policy") ~ "Status 6",
+           (CAN_INIT_STAT %in% c('1010', "2010", "6011") & policy_period == "Pre Policy") ~ "Status 1A",
+           (CAN_INIT_STAT %in% c('1020', "2020", "6012") & policy_period == "Pre Policy") ~ "Status 1B",
+           (CAN_INIT_STAT %in% c('1030', '1120', '2030', '2120', '6002', '6020', '6030', '9020') & policy_period == "Pre Policy") ~ "Old Status 2",
+           CAN_INIT_STAT == 2999 ~ "Inactive",
+           .default = "Inactive"), 
+  initial_status = factor(initial_status,
+                          levels = c("Status 1", "Status 2", "Status 3", "Status 4", "Status 5", "Status 6", "Inactive", "Status 1A", "Status 1B", "Old Status 2")),
+     COVID = cut(CAN_LISTING_DT,
+                 as.Date(c('2014-01-01', '2020-01-01', '2020-07-01', '2021-01-01', "2021-07-01", "2022-01-01", "2022-07-01", '2023-01-01', '2023-07-01', '2024-01-01', '2024-07-01', '2025-01-01')), 
+                 labels = c('Pre-COVID', "2020 H1", "2020 H2", "2021 H1", "2021 H2", "2022 H1", "2022 H2", "2023 H1", '2023 H2', '2024 H1','2024 H2')),
+  prior_cardiac_surg = ifelse(CAN_CARDIAC_SURG == "Y", 1, 0),
+  functional_status = case_when(
+    CAN_FUNCTN_STAT %in% c(2100, 2090, 2080) ~ "Good",
+    CAN_FUNCTN_STAT %in% c(2070, 2060, 2050) ~ "Moderate",
+    CAN_FUNCTN_STAT %in% c(2040, 2030, 2020, 2010) ~ "Poor",
+    .default = "Unknown"),
+  functional_status = factor(functional_status,
+                             levels = c("Good", "Moderate", "Poor", "Unknown")),
+  PVR = (CAN_PULM_ART_MEAN - CAN_PCW_MEAN)/CAN_CARDIAC_OUTPUT
+)
+ 
 cand_thor$can_race <- as.factor(cand_thor$can_race) |> relevel(cand_thor$can_race, ref = "White")
 cand_thor$ethnicity <-as.factor(cand_thor$ethnicity) |> relevel(cand_thor$ethnicity, ref = "Not Latinx")
 cand_thor$insurance <- relevel(cand_thor$insurance, ref = "Public insurance")
 ```
 
-## Varible to incidate pre and post policy cohort
 
-Separated into pre and post 2018 policy cohorts
-
-```{r cars}
-cand_thor = cand_thor |> 
-  mutate(
-    policy_period = case_when(
-      CAN_LISTING_DT < mdy("10-18-2018") & CAN_LISTING_DT >= mdy("01-01-2014") ~ "Pre Policy",
-      CAN_LISTING_DT >= mdy("10-18-2018") & CAN_LISTING_DT <= as.Date("2024-12-31") ~ "Post Policy"
-    ),
-    policy_period = fct_rev(policy_period)) |> #Reverse order to allow pre to be before post
-  group_by(CAN_LISTING_CTR_CD, policy_period) |>
-  mutate(num_transplants = sum(!is.na(REC_TX_DT) | !is.na(PERS_NEXTTX))) |> 
-  ungroup() |> 
-  group_by(CAN_LISTING_CTR_CD) |> 
-  mutate(
-    eligibility = ifelse(sum(policy_period == "Pre Policy") <1, "Center with no candidates listed in pre-policy period", NA),
-    num_transplants_total = sum(!is.na(REC_TX_DT) | !is.na(PERS_NEXTTX)),
-    ctr_adi_total = mean(mean_adi)
-  )
-  
-```
-
-```{r seasonally matched cohorts, eval = FALSE}
-# cand_thor = cand_thor |> 
-#   mutate(
-#     policy_period = case_when(
-#       CAN_LISTING_DT < mdy("10-18-2018") & CAN_LISTING_DT >= mdy("01-01-2014") ~ "Pre Policy",
-#       CAN_LISTING_DT >= mdy("01-01-2019") & CAN_LISTING_DT <= as.Date("2023-10-18") ~ "Post Policy"
-#     ),
-#     policy_period = fct_rev(policy_period)) |> #Reverse order to allow pre to be before post
-#   group_by(CAN_LISTING_CTR_CD, policy_period) |>
-#   mutate(num_transplants = sum(!is.na(REC_TX_DT) | !is.na(PERS_NEXTTX))) |> 
-#   ungroup() |> 
-#   group_by(CAN_LISTING_CTR_CD) |> 
-#   mutate(
-#     eligibility = ifelse(sum(policy_period == "Pre Policy") <1, "Center with no candidates listed in pre-policy period", NA),
-#     num_transplants_total = sum(!is.na(REC_TX_DT) | !is.na(PERS_NEXTTX)),
-#     ctr_adi_total = mean(mean_adi)
-#   )
-```
 
 
 ## Figure 1
@@ -398,14 +448,14 @@ cand_thor <- cand_thor %>%
     post_policy = ifelse(policy_period == "Post Policy" & is.na(eligibility), "Listed following 2018 policy change", NA),
     outcome_table1_pre = ifelse(!is.na(pre_policy), 
                                 case_when(
-                                  dlvad == 1 ~ "Waitlisted with LVAD",
-                                  dlvad == 0 ~ "No LVAD at waitlisting"), NA),
+                                  dlvad == 1 ~ "Waitlisted with BTT-LVAD",
+                                  dlvad == 0 ~ "No BTT-LVAD at waitlisting"), NA),
     outcome_table1_post = ifelse(!is.na(post_policy), 
                                  case_when(
-                                  dlvad == 1 ~ "Waitlisted with LVAD",
-                                  dlvad == 0 ~ "No LVAD at waitlisting"), NA))
+                                  dlvad == 1 ~ "Waitlisted with BTT-LVAD",
+                                  dlvad == 0 ~ "No BTT-LVAD at waitlisting"), NA))
 
-txt <- gen_text(rep("Heart transplant candidate registrations, 2014-2024", 51537))
+txt <- gen_text(rep("Heart transplant candidate registrations, 2014-2024", 51641))
 fig1 <- add_box(txt = txt)
 
 
@@ -439,7 +489,7 @@ fig1 <- add_split(
 
 plot(fig1, grViz = TRUE)
 
-ggsave("strobe_diagram.png", 
+ggsave("strobe_diagram.tiff", 
        plot = build_grid(fig1),
        width = 10,
        height =5,
@@ -518,6 +568,7 @@ heart_cohort = heart_cohort %>% mutate(
 ```{r}
 heart_cohort$CAN_HGT_CM[is.na(heart_cohort$CAN_HGT_CM)] <-median(heart_cohort$CAN_HGT_CM, na.rm=T)
 heart_cohort$CAN_WGT_KG[is.na(heart_cohort$CAN_WGT_KG)] <-median(heart_cohort$CAN_WGT_KG, na.rm=T)
+heart_cohort$CAN_AGE_AT_LISTING[is.na(heart_cohort$CAN_AGE_AT_LISTING)]<- median(heart_cohort$CAN_AGE_AT_LISTING, na.rm=T)
 ```
 
 ```{r}
@@ -536,7 +587,7 @@ heart_cohort <- heart_cohort |>
 
 ```{r}
 table1 = heart_cohort |> 
-  dplyr::select(CAN_AGE_AT_LISTING, CAN_GENDER, can_race, mean_adi, CAN_ETHNICITY_SRTR, education, insurance, CAN_ABO, CAN_WGT_KG, CAN_HGT_CM, PX_ID, multi_listed, policy_period, dlvad, diagnosis) |> 
+  dplyr::select(CAN_AGE_AT_LISTING, CAN_GENDER, can_race, mean_adi, CAN_ETHNICITY_SRTR, education, insurance, blood_type, CAN_WGT_KG, CAN_HGT_CM, PX_ID, multi_listed, policy_period, dlvad, diagnosis, initial_status, COVID, prior_cardiac_surg, CAN_IV_INOTROP, functional_status, adi_decile_factor, PVR) |> 
   group_by(PX_ID) |> 
   tbl_summary(,
     label = list( 
@@ -555,7 +606,7 @@ table1 = heart_cohort |>
   modify_table_body(filter, !(variable == "PX_ID" ))
 
 table1_stratified = heart_cohort |> 
-  dplyr::select(CAN_AGE_AT_LISTING, CAN_GENDER, can_race, mean_adi, CAN_ETHNICITY_SRTR, education, insurance, CAN_ABO, CAN_WGT_KG, CAN_HGT_CM, PX_ID, multi_listed, policy_period, dlvad, diagnosis) |> 
+  dplyr::select(CAN_AGE_AT_LISTING, CAN_GENDER, can_race, mean_adi, CAN_ETHNICITY_SRTR, education, insurance, blood_type, CAN_WGT_KG, CAN_HGT_CM, PX_ID, multi_listed, policy_period, dlvad, diagnosis, initial_status, COVID, prior_cardiac_surg, CAN_IV_INOTROP, functional_status, adi_decile_factor, PVR) |> 
   group_by(PX_ID) |> 
   tbl_summary(by = policy_period,
     label = list( 
@@ -571,49 +622,53 @@ table1_stratified = heart_cohort |>
   ),
   statistic = list(all_continuous() ~ "{mean} ({sd})", all_categorical() ~ "{n} ({p}%)")) |>  
   modify_table_body(filter, !(variable == "PX_ID" ))|> 
-  add_p(test = list(diagnosis ~ "fisher.test", CAN_ABO ~ "fisher.test", can_race ~ "fisher.test", education ~ "fisher.test", insurance ~ "fisher.test"), test.args = list(diagnosis = list(simulate.p.value = TRUE), CAN_ABO = list(simulate.p.value = TRUE), can_race = list(simulate.p.value = TRUE), education = list(simulate.p.value = TRUE), insurance = list(simulate.p.value = T)))
+  add_p(test = list(diagnosis ~ "fisher.test", can_race ~ "fisher.test", education ~ "fisher.test", insurance ~ "fisher.test"), test.args = list(diagnosis = list(simulate.p.value = TRUE), can_race = list(simulate.p.value = TRUE), education = list(simulate.p.value = TRUE), insurance = list(simulate.p.value = T)))
 
+
+table1_supplement_pre = heart_cohort |> 
+  dplyr::select(CAN_AGE_AT_LISTING, CAN_GENDER, can_race, mean_adi, CAN_ETHNICITY_SRTR, education, insurance, blood_type, CAN_WGT_KG, CAN_HGT_CM, PX_ID, multi_listed, policy_period, dlvad, diagnosis, initial_status, COVID, prior_cardiac_surg, CAN_IV_INOTROP, functional_status, adi_decile_factor, PVR) |> 
+  filter(policy_period == "Pre Policy") |> 
+  group_by(PX_ID) |> 
+  tbl_summary(by = dlvad,
+    label = list( 
+    can_race ~ "Race",
+    CAN_AGE_AT_LISTING ~ "Age",
+    CAN_GENDER ~ "Sex",
+    CAN_ETHNICITY_SRTR ~ "Ethnicity",
+    insurance ~ "Primary Payment Type",
+    education ~ "Education Level",
+    mean_adi ~ "ADI Percentile",
+    diagnosis ~ "Primary Diagnosis"
+  ),
+  statistic = list(all_continuous() ~ "{mean} ({sd})", all_categorical() ~ "{n} ({p}%)")) |>  
+  modify_table_body(filter, !(variable == "PX_ID" ))|> 
+  add_p(test = list(diagnosis ~ "fisher.test", can_race ~ "fisher.test", education ~ "fisher.test", insurance ~ "fisher.test", initial_status ~ "fisher.test"), test.args = list(diagnosis = list(simulate.p.value = TRUE), can_race = list(simulate.p.value = TRUE), education = list(simulate.p.value = TRUE), insurance = list(simulate.p.value = T), initial_status = list(simulate.p.value = T)))
+
+table1_supplement_post = heart_cohort |> 
+  dplyr::select(CAN_AGE_AT_LISTING, CAN_GENDER, can_race, mean_adi, CAN_ETHNICITY_SRTR, education, insurance, blood_type, CAN_WGT_KG, CAN_HGT_CM, PX_ID, multi_listed, policy_period, dlvad, diagnosis, initial_status, COVID, prior_cardiac_surg, CAN_IV_INOTROP, functional_status, adi_decile_factor, PVR) |> 
+  filter(policy_period == "Post Policy") |> 
+  group_by(PX_ID) |> 
+  tbl_summary(by = dlvad,
+    label = list( 
+    can_race ~ "Race",
+    CAN_AGE_AT_LISTING ~ "Age",
+    CAN_GENDER ~ "Sex",
+    CAN_ETHNICITY_SRTR ~ "Ethnicity",
+    insurance ~ "Primary Payment Type",
+    education ~ "Education Level",
+    mean_adi ~ "ADI Percentile",
+    diagnosis ~ "Primary Diagnosis"
+  ),
+  statistic = list(all_continuous() ~ "{mean} ({sd})", all_categorical() ~ "{n} ({p}%)")) |>  
+  modify_table_body(filter, !(variable == "PX_ID" ))|> 
+  add_p(test = list(diagnosis ~ "fisher.test", can_race ~ "fisher.test", education ~ "fisher.test", insurance ~ "fisher.test", initial_status ~ "fisher.test"), test.args = list(diagnosis = list(simulate.p.value = TRUE), can_race = list(simulate.p.value = TRUE), education = list(simulate.p.value = TRUE), insurance = list(simulate.p.value = T), initial_status = list(simulate.p.value = T)))
 
  table1
  table1_stratified
+ table1_supplement_pre
+ table1_supplement_post
 ```
 
-
-# Linking to Lab values
-
-```{r}
-riskstratdataHR =read_sas("./HRStatJust2509/RiskStratDataHR.sas7bdat")
-col_desc =read_sas("./HRStatJust2509/ColumnDescriptions.sas7bdat")
-table_desc = read_sas("./HRStatJust2509/TableDescriptions.sas7bdat") 
-riskstratdataHR = riskstratdataHR |> 
-  subset(px_id %in% heart_cohort$PX_ID) |> 
-  dplyr::select(px_id, contains("HrSevFail")) |> 
-  mutate(PX_ID = px_id) |> dplyr::select(-px_id)
-riskstratdataHR = left_join(riskstratdataHR, dplyr::select(heart_cohort, PX_ID, CAN_LISTING_DT, CAN_AGE_AT_LISTING, CAN_GENDER), by = "PX_ID")
-riskstratdataHR = riskstratdataHR |>
-  group_by(PX_ID) |>
-  fill(HrSevFailNtBnpType, .direction='downup') |> 
-  mutate(
-    eGFR = case_when(
-    CAN_GENDER == 'F' & !is.na(HrSevFailCreatinine) ~ 142 * (pmin((HrSevFailCreatinine / 0.7), 1)^(-0.241)) *
-      (pmax((HrSevFailCreatinine / 0.7), 1)^(-1.2)) * 0.9938^(CAN_AGE_AT_LISTING) * 1.012,
-    
-    CAN_GENDER == 'M' & !is.na(HrSevFailCreatinine) ~ 142 * (pmin((HrSevFailCreatinine / 0.9), 1)^(-0.302)) *
-      (pmax((HrSevFailCreatinine / 0.7), 1)^(-1.2)) * 0.9938^(CAN_AGE_AT_LISTING)
-    ),
-    albumin = median(HrSevFailAlbumin, na.rm = T),
-    bilirubin = median(HrSevFailBilirubin, na.rm = T),
-    sodium = median(HrSevFailSodium, na.rm = T),
-    bnp_nt_pro = ifelse(HrSevFailNtBnpType == "NT Pro BNP", 1, 0),
-    bnp = case_when(
-      bnp_nt_pro == 0 ~ median(HrSevFailBnp[bnp_nt_pro == 0], na.rm = T),
-      bnp_nt_pro == 1 ~ median(HrSevFailBnp[bnp_nt_pro == 1], na.rm = T)
-    )
-  ) |> 
-  distinct(PX_ID, .keep_all = T)
-
-heart_cohort = left_join(heart_cohort, dplyr::select(riskstratdataHR, eGFR, albumin, bilirubin, sodium, bnp_nt_pro, bnp), by = "PX_ID")
-```
 
 
 
@@ -647,170 +702,20 @@ heart_cohort = left_join(heart_cohort, dplyr::select(centers, CAN_LISTING_CTR_CD
 ```
 
 
-# Scatter plot 
-
-Filtering by policy period just to make sure each center is only present once. volume and mean adi for these plots are calculated across the entire study period 
-
-```{r}
-fig2 = centers |> 
-  filter(volume_decile %in% c( "1st Decile","10th Decile") & policy_period == "Post Policy") |> 
-  ggplot()+
-  geom_point(aes(color = volume_decile, x=dlvad_percent_point_change, y = ctr_adi_total))+
-  labs(title = "Center Response to Policy Change",
-       x = "Change in percent of candidates listed with d-LVAD",
-       y = "Center Mean ADI",
-       colour = "Center Volume") 
-fig2
-
-fig2_alt = centers |> 
-  filter(policy_period == "Post Policy") |> 
-  ggplot()+
-  geom_point(aes(color = volume_decile, x=dlvad_percent_point_change, y = ctr_adi_total))+
-  labs(title = "Center Response to Policy Change",
-       x = "Change in percent of candidates listed with d-LVAD",
-       y = "Center Mean ADI",
-       colour = "Center Volume") 
-fig2_alt
-
-fig2_boxplot = centers |> 
-  filter(policy_period == "Post Policy") |> 
-  ggplot()+
-  geom_boxplot(aes(x=dlvad_percent_point_change, y = ctr_adi_decile))+
-  labs(title = "Center Response to Policy Change",
-       x = "Change in percent of candidates listed with d-LVAD",
-       y = "Center Volume Decile")
-fig2_boxplot
-
-```
 
 
 ## Arrow plots
 
-Filtering by policy period just to make sure each center is only present once. volume and mean adi for these plots are calculated across the entire study period 
-
-```{r - high volume arrow plot}
-summary = centers|> 
-  group_by(CAN_LISTING_CTR_CD)|>   
-  filter(any((volume_decile == "10th Decile" | volume_decile == "9th Decile") & period == "Post-2018 Policy")) |>
-  ungroup() |> 
-  group_by(period) |> 
-  summarize(dlvad_num = sum(dlvad_num),
-            total_registrations = sum(total_registrations)) |> 
-  mutate(
-    CAN_LISTING_CTR_CD = "Overall",
-    dlvad_percent = dlvad_num / total_registrations) |> 
-  ungroup() |> 
-  group_by(CAN_LISTING_CTR_CD) |> 
-  mutate(
-    dlvad_percent_point_change = dlvad_percent[period == "Post-2018 Policy"] - dlvad_percent[period == "Pre-2018 Policy"])
-
-arrow_data = centers|> 
-  dplyr::select( CAN_LISTING_CTR_CD,period, dlvad_num, total_registrations, dlvad_percent, dlvad_percent_point_change, volume_decile) |> 
-  group_by(CAN_LISTING_CTR_CD) |> 
-  filter(any((volume_decile == "10th Decile" | volume_decile == "9th Decile") & period == "Post-2018 Policy")) |>
-  dplyr::select(-volume_decile) |> 
-  rbind(summary) |>
-  arrange(CAN_LISTING_CTR_CD, desc(period)) |> 
-  ungroup()
-
-arrow_data <- arrow_data |> 
-  mutate(
-    is_summary = CAN_LISTING_CTR_CD == "Overall") |>
-  arrange(
-    desc(is_summary),                       # summary last (FALSE first, TRUE last)
-    dlvad_percent_point_change) |>     # sort real centers by point change
-  mutate(
-    CAN_LISTING_CTR_CD = factor(CAN_LISTING_CTR_CD,
-                                levels = unique(CAN_LISTING_CTR_CD))) |> 
-  group_by(CAN_LISTING_CTR_CD) |> 
-  mutate(ctr_anon = as.numeric(as.factor(CAN_LISTING_CTR_CD)))
-
-arrow_high_volume = arrow_data |> 
-  ggplot(aes(
-    color = period, 
-    x=dlvad_percent*100, 
-    y = CAN_LISTING_CTR_CD))+ 
-  geom_point()+ 
-  geom_path(aes(group =CAN_LISTING_CTR_CD), 
-            arrow = arrow(ends = "first", length = unit(0.1, "inches")), show.legend = FALSE, color = "black")+ 
-  labs(
-    title = "High volume centers", 
-    x = "Candidates listed with LVAD (%)", 
-    y = "Top 20% Centers by Volume", 
-    color = "Policy Period")+ 
-  theme_classic()+
-  theme(legend.position = "none")+
-  xlim(0,100)+
-  scale_y_discrete(labels = function(x) { ifelse(x == "Overall", "Overall", "")})
-arrow_high_volume
-```
-  
-```{r - low volume arrow plot}
-summary = centers|> 
-  group_by(CAN_LISTING_CTR_CD)|>   
-  filter(any((volume_decile == "1st Decile" | volume_decile == "2nd Decile") & period == "Post-2018 Policy")) |>
-  ungroup() |> 
-  group_by(period) |> 
-  summarize(dlvad_num = sum(dlvad_num),
-            total_registrations = sum(total_registrations)) |> 
-  mutate(
-    CAN_LISTING_CTR_CD = "Overall",
-    dlvad_percent = dlvad_num / total_registrations) |> 
-  ungroup() |> 
-  group_by(CAN_LISTING_CTR_CD) |> 
-  mutate(
-    dlvad_percent_point_change = dlvad_percent[period == "Post-2018 Policy"] - dlvad_percent[period == "Pre-2018 Policy"])
-
-arrow_data = centers|> 
-  dplyr::select( CAN_LISTING_CTR_CD,period, dlvad_num, total_registrations, dlvad_percent, dlvad_percent_point_change, volume_decile) |> 
-  group_by(CAN_LISTING_CTR_CD) |> 
-  filter(any((volume_decile == "1st Decile" | volume_decile == "2nd Decile") & period == "Post-2018 Policy")) |>
-  dplyr::select(-volume_decile) |> 
-  rbind(summary) |>
-  arrange(CAN_LISTING_CTR_CD, desc(period)) |> 
-  ungroup()
-
-arrow_data <- bind_rows(arrow_data, summary)
-arrow_data <- arrow_data |> 
-  mutate(
-    is_summary = CAN_LISTING_CTR_CD == "Overall") |>
-  arrange(
-    desc(is_summary),                       # summary last (FALSE first, TRUE last)
-    dlvad_percent_point_change) |>     # sort real centers by point change
-  mutate(
-    CAN_LISTING_CTR_CD = factor(CAN_LISTING_CTR_CD,
-                                levels = unique(CAN_LISTING_CTR_CD)))
-
-arrow_low_volume = arrow_data |> 
-  ggplot(aes(
-    color = period, 
-    x=dlvad_percent*100, 
-    y = CAN_LISTING_CTR_CD))+ 
-  geom_point()+ 
-  geom_path(aes(group =CAN_LISTING_CTR_CD), 
-            arrow = arrow(ends = "first", length = unit(0.1, "inches")), show.legend = FALSE, color = "black")+ 
-  labs(
-    title = "Low volume centers", 
-    x = "Candidates listed with LVAD (%)", 
-    y = "Bottom 20% Centers by Volume", 
-    color = "Policy Period")+ 
-  theme_classic()+
-  theme(legend.position = "None")+
-  xlim(0,100)+
-  scale_y_discrete(labels = function(x) { ifelse(x == "Overall", "Overall", "")})
-arrow_low_volume
-```  
-  
 ```{r - high ADI centers}
 summary = centers|>
   group_by(CAN_LISTING_CTR_CD)|>   
   filter(any((ctr_adi_decile == "10th Decile" | ctr_adi_decile == "9th Decile") & period == "Post-2018 Policy")) |>
   ungroup() |> 
   group_by(period) |> 
-  summarize(dlvad_num = sum(dlvad_num),
+  dplyr::summarize(dlvad_num = sum(dlvad_num),
             total_registrations = sum(total_registrations)) |> 
   mutate(
-    CAN_LISTING_CTR_CD = "Overall",
+    CAN_LISTING_CTR_CD = "Combined",
     dlvad_percent = dlvad_num / total_registrations) |> 
   ungroup() |> 
   group_by(CAN_LISTING_CTR_CD) |> 
@@ -829,7 +734,7 @@ arrow_data = centers|>
 arrow_data <- bind_rows(arrow_data, summary)
 arrow_data <- arrow_data |> 
   mutate(
-    is_summary = CAN_LISTING_CTR_CD == "Overall") |>
+    is_summary = CAN_LISTING_CTR_CD == "Combined") |>
   arrange(
     desc(is_summary),                       # summary last (FALSE first, TRUE last)
     dlvad_percent_point_change) |>     # sort real centers by point change
@@ -846,15 +751,15 @@ arrow_high_adi = arrow_data |>
   geom_path(aes(group =CAN_LISTING_CTR_CD), 
             arrow = arrow(ends = "first", length = unit(0.1, "inches")), show.legend = FALSE, color = "black")+ 
   labs(
-    title = "High ADI centers", 
-    x = "Candidates listed with LVAD (%)", 
+    title = "Centers with most disadvantaged candidates",
+    x = "Candidates listed with BTT-LVAD (%)", 
     y = "Top 20% Centers by Mean ADI\n(Most Disadvantage)", 
     color = "Policy Period")+ 
   theme_classic()+
   theme(legend.position = "None")+
   scale_x_continuous(breaks = c(0, 25, 50, 75), 
                      limits = c(0,75))+
-  scale_y_discrete(labels = function(x) { ifelse(x == "Overall", "Overall", "")})
+  scale_y_discrete(labels = function(x) { ifelse(x == "Combined", "Combined", "")})
 arrow_high_adi
 ```
 
@@ -864,10 +769,10 @@ summary = centers|>
   filter(any((ctr_adi_decile == "1st Decile" | ctr_adi_decile == "2nd Decile") & period == "Post-2018 Policy")) |>
   ungroup() |> 
   group_by(period) |> 
-  summarize(dlvad_num = sum(dlvad_num),
+  dplyr::summarize(dlvad_num = sum(dlvad_num),
             total_registrations = sum(total_registrations)) |> 
   mutate(
-    CAN_LISTING_CTR_CD = "Overall",
+    CAN_LISTING_CTR_CD = "Combined",
     dlvad_percent = dlvad_num / total_registrations) |> 
   ungroup() |> 
   group_by(CAN_LISTING_CTR_CD) |> 
@@ -886,7 +791,7 @@ arrow_data = centers|>
 arrow_data <- bind_rows(arrow_data, summary)
 arrow_data <- arrow_data |> 
   mutate(
-    is_summary = CAN_LISTING_CTR_CD == "Overall") |>
+    is_summary = CAN_LISTING_CTR_CD == "Combined") |>
   arrange(
     desc(is_summary),                       # summary last (FALSE first, TRUE last)
     dlvad_percent_point_change) |>     # sort real centers by point change
@@ -903,18 +808,18 @@ arrow_low_adi = arrow_data |>
   geom_path(aes(group =CAN_LISTING_CTR_CD), 
             arrow = arrow(ends = "first", length = unit(0.1, "inches")), show.legend = FALSE, color = "black")+ 
   labs(
-    title = "Low ADI centers", 
-    x = "Candidates listed with LVAD (%)", 
+    title = "Centers with least disadvantaged candidates",
+    x = "Candidates listed with BTT-LVAD (%)", 
     y = "Bottom 20% Centers by Mean ADI\n(Least Disadvantage)", 
     color = "Policy Period")+ 
   theme_classic()+
   theme(legend.position = "None")+
   scale_x_continuous(breaks = c(0, 25, 50, 75), 
                      limits = c(0,75))+  
-  scale_y_discrete(labels = function(x) { ifelse(x == "Overall", "Overall", "")})
+  scale_y_discrete(labels = function(x) { ifelse(x == "Combined", "Combined", "")})
 arrow_low_adi
 ```
-# Figure 2
+# Figure 3
 
 ```{r}
 legend_plot = arrow_data |> 
@@ -929,20 +834,6 @@ legend_plot = arrow_data |>
         legend.text = element_text(size=10))
 legend <- cowplot::get_legend(legend_plot)
 
-arrow_plots = ggdraw() +
-  draw_plot(plot_grid(arrow_high_volume, arrow_low_volume, arrow_high_adi, arrow_low_adi, 
-                      labels = c("A", "B", "C", "D"), 
-                      align = "hv", axis = "l", 
-                      nrow = 2, ncol=2)) +
-  theme(plot.background = element_rect(fill = "white", color = NA))
-arrow_plots
-
-arrow_plots_full = ggdraw() +
-  draw_plot(plot_grid(arrow_plots, legend,
-                      align = "h", axis = "l",
-                      nrow = 1, rel_widths = c(7,1))) +
-  theme(plot.background = element_rect(fill = "white", color = NA))
-arrow_plots_full
 
 arrow_plots_full_no_vol = ggdraw() +
   draw_plot(plot_grid(arrow_high_adi, arrow_low_adi, 
@@ -956,9 +847,9 @@ arrow_plots_full_no_vol = ggdraw() +
                       nrow = 1, rel_widths = c(7,1))) +
   theme(plot.background = element_rect(fill = "white", color = NA))
 
-  
-ggsave("arrow_plot.png", arrow_plots_full, width = 12, height = 7)
-ggsave("arrow_plot_no_vol.png", arrow_plots_full_no_vol, width = 12, height = 3.5)
+arrow_plots_full_no_vol
+
+ggsave("arrow_plot_no_vol.tiff", arrow_plots_full_no_vol, width = 12, height = 3.5)
 
 ```
 # Mixed-effects logistic regression model with a random center intercept
@@ -972,6 +863,9 @@ mean adi decile relative to other centers
 ```{r }
 heart_cohort$competitive_opo <-as.factor(heart_cohort$competitive_opo) |> relevel(heart_cohort$competitive_opo, ref = "1")
 heart_cohort$multi_listed <-as.factor(heart_cohort$multi_listed) |>  relevel(heart_cohort$multi_listed, ref = "0")
+heart_cohort$prior_cardiac_surg <-as.factor(heart_cohort$prior_cardiac_surg) |> relevel(heart_cohort$prior_cardiac_surg, ref = "0")
+heart_cohort$CAN_IV_INOTROP <-as.factor(heart_cohort$CAN_IV_INOTROP) |>  relevel(heart_cohort$CAN_IV_INOTROP, ref = "0")
+
 set.seed(1234)
 model_min <- glmer(dlvad ~ adi_decile_num+ period + adi_decile_num*period + (1 | CAN_LISTING_CTR_CD), 
                   data = heart_cohort, 
@@ -980,75 +874,72 @@ model_min <- glmer(dlvad ~ adi_decile_num+ period + adi_decile_num*period + (1 |
 
 
 full_sens <- glmer(dlvad ~ 
-                    transplant_volume  + adi_decile_num + period + adi_decile_num*period+ transplant_volume*period + competitive_opo+ CAN_AGE_AT_LISTING+ CAN_GENDER+  can_race + CAN_ETHNICITY_SRTR+ CAN_HGT_CM + CAN_WGT_KG + multi_listed + period + education + insurance + diagnosis + (1 | CAN_LISTING_CTR_CD), 
+                    transplant_volume  + adi_decile_num + period + adi_decile_num*period+ transplant_volume*period + competitive_opo+ CAN_AGE_AT_LISTING+ CAN_GENDER+  can_race + CAN_ETHNICITY_SRTR+ CAN_HGT_CM + CAN_WGT_KG + multi_listed + period + education + insurance + diagnosis + blood_type + initial_status + COVID + prior_cardiac_surg + CAN_IV_INOTROP + functional_status + (1 | CAN_LISTING_CTR_CD), 
                   data = heart_cohort, 
                   family = "binomial",
                   control = glmerControl(optimizer = "bobyqa")) 
 
+sens_no_missing_adi <- glmer(dlvad ~ 
+                    transplant_volume  + adi_decile_num + period + adi_decile_num*period+ transplant_volume*period + competitive_opo+ CAN_AGE_AT_LISTING+ CAN_GENDER+  can_race + CAN_ETHNICITY_SRTR+ CAN_HGT_CM + CAN_WGT_KG + multi_listed + period + education + insurance + diagnosis + blood_type + initial_status + COVID + prior_cardiac_surg + CAN_IV_INOTROP + functional_status + (1 | CAN_LISTING_CTR_CD), 
+                  data = filter(heart_cohort, missing_adi == 0), 
+                  family = "binomial",
+                  control = glmerControl(optimizer = "bobyqa")) 
+
+sens_continuous_flow_only <- glmer(cont_flow_dlvad ~ 
+                    transplant_volume  + adi_decile_num + period + adi_decile_num*period+ transplant_volume*period + competitive_opo+ CAN_AGE_AT_LISTING+ CAN_GENDER+  can_race + CAN_ETHNICITY_SRTR+ CAN_HGT_CM + CAN_WGT_KG + multi_listed + period + education + insurance + diagnosis + blood_type + initial_status + COVID + prior_cardiac_surg + CAN_IV_INOTROP + functional_status + (1 | CAN_LISTING_CTR_CD), 
+                  data = heart_cohort, 
+                  family = "binomial",
+                  control = glmerControl(optimizer = "bobyqa"))
+
+full_adi_factor <- glmer(dlvad ~ 
+                    transplant_volume  + adi_decile_factor + period + adi_decile_factor*period+ transplant_volume*period + competitive_opo+ CAN_AGE_AT_LISTING+ CAN_GENDER+  can_race + CAN_ETHNICITY_SRTR+ CAN_HGT_CM + CAN_WGT_KG + multi_listed + period + education + insurance + diagnosis + blood_type + initial_status + COVID + prior_cardiac_surg + CAN_IV_INOTROP + functional_status + (1 | CAN_LISTING_CTR_CD), 
+                  data = heart_cohort, 
+                  family = "binomial",
+                  control = glmerControl(optimizer = "bobyqa"))
+
 model_min |> tbl_regression(exp = T)
 full_sens |> tbl_regression(exp = T)
+full_adi_factor |> tbl_regression(exp = T)
+sens_no_missing_adi |>  tbl_regression(exp = T)
+sens_continuous_flow_only |>  tbl_regression(exp = T)
 ```
 
 ```{r - OR, CI, p for minimum model}
 betas_min <- fixef(model_min)
-#or_vol_post_min = exp(betas_min["transplant_volume"] +betas_min["transplant_volume:periodPost-2018 Policy"])
 or_adi_post_min = exp(betas_min["adi_decile_num"] +betas_min["adi_decile_num:periodPost-2018 Policy"])
 
-# 
+
 set.seed(1234)
 simul <- sim(model_min, 1000)
-# vol_in_post_period <- simul@fixef[,"transplant_volume"] + simul@fixef[,"transplant_volume:periodPost-2018 Policy"]
-# ci_vol = exp(quantile(vol_in_post_period, c(0.025, 0.975))) #extract 95% CI
-# p_vol <- mean(vol_in_post_period * sign(mean(vol_in_post_period)) < 0)
-# p_vol = 2 * min(p_vol, 1 - p_vol)
 
 adi_in_post_period <- simul@fixef[,"adi_decile_num"] + simul@fixef[,"adi_decile_num:periodPost-2018 Policy"]
 ci_adi = exp(quantile(adi_in_post_period, c(0.025, 0.975)))
 p_adi <- mean(adi_in_post_period * sign(mean(adi_in_post_period)) < 0)
 p_adi = 2 * min(p_adi, 1 - p_adi)
 
-# or_vol_post_min
-# ci_vol
-# p_vol
+
 
 or_adi_post_min
 ci_adi
 p_adi
 
-#prediction_vol_min = estimate_expectation(model_min, by = c("period", "transplant_volume"))
 prediction_adi_min = estimate_expectation(model_min, by = c("period", "adi_decile_num"))
 
-# prediction_vol_min = prediction_vol_min |> group_by(transplant_volume) |> filter(n() == 2)
-# prediction_vol_min$group <- factor(prediction_vol_min$transplant_volume)
-# 
+
 prediction_adi_min$group <- factor(prediction_adi_min$adi_decile_num,
                                    levels = c(1:10),
                                    labels = c("1st (Least Disadvantage)", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th","10th (Most Disadvantage)"))
 
-# 
-# #volume - unadjusted
-# vol_min_estimate = ggplot(prediction_vol_min, aes(x = period, y = Predicted, color = transplant_volume)) +
-#   geom_point() +
-#   geom_path(aes(group =transplant_volume))+
-#   ylim(0.1, 0.32)+
-#   labs(
-#     x = "",
-#     y = "Predicted Probability of d-LVAD at Listing",
-#     title = "Unadjusted"
-#   ) +
-#   scale_colour_viridis_c()+
-#   theme_minimal()+
-#   theme(legend.position = "none")
-# vol_min_estimate
+
 
 #adi - unadjusted
 adi_min_estimate = ggplot(prediction_adi_min, aes(x = period, y = Predicted, color = group)) +
   geom_point() +
   geom_path(aes(group =group))+
-  ylim(0.1, 0.31)+
+  ylim(0.1, 0.30)+
   labs(
     x = "",
-    y = "Predicted Probability of LVAD at Listing",
+    y = "Predicted Probability of BTT-LVAD at Listing",
     title = "Unadjusted"
   ) +
   scale_colour_viridis_d()+
@@ -1060,60 +951,37 @@ adi_min_estimate
 
 ```{r - person-level fully adjusted ADI model }
 betas_full_sens = fixef(full_sens)
-or_vol_post_full_sens= exp(betas_full_sens["transplant_volume"] +betas_full_sens["transplant_volume:periodPost-2018 Policy"])
+
 or_adi_post_full_sens = exp(betas_full_sens["adi_decile_num"] +betas_full_sens["adi_decile_num:periodPost-2018 Policy"])
 set.seed(1234)
 simul <- sim(full_sens, 1000)
-# vol_in_post_period <- simul@fixef[,"transplant_volume"] + simul@fixef[,"transplant_volume:periodPost-2018 Policy"]
-# ci_vol = exp(quantile(vol_in_post_period, c(0.025, 0.975))) #extract 95% CI
-# p_vol <- mean(vol_in_post_period * sign(mean(vol_in_post_period)) < 0)
-# p_vol = 2 * min(p_vol, 1 - p_vol)
 
 adi_in_post_period <- simul@fixef[,"adi_decile_num"] + simul@fixef[,"adi_decile_num:periodPost-2018 Policy"]
 ci_adi = exp(quantile(adi_in_post_period, c(0.025, 0.975)))
 p_adi <- mean(adi_in_post_period * sign(mean(adi_in_post_period)) < 0)
 p_adi = 2 * min(p_adi, 1 - p_adi)
 
-# or_vol_post_full_sens
-# ci_vol
-# p_vol
 
 or_adi_post_full_sens
 ci_adi
 p_adi
 
-#prediction_vol_full_sens = estimate_expectation(full_sens, by = c("period", "transplant_volume"))
-prediction_adi_full_sens = estimate_expectation(full_sens, by = c("period", "adi_decile_num"))
+prediction_adi_full_sens = estimate_expectation(full_sens, by = c("period", "adi_decile_num", "functional_status = 'Poor'", "initial_status = c('Status 1B', 'Status 4')"))
+prediction_adi_full_sens = prediction_adi_full_sens |> filter((period == "Pre-2018 Policy" & initial_status == "Status 1B") | (period == "Post-2018 Policy" & initial_status == "Status 4"))
 
-#prediction_vol_full_sens = prediction_vol_full_sens |> group_by(transplant_volume) |> filter(n() == 2)
+
 prediction_adi_full_sens$group <- factor(prediction_adi_full_sens$adi_decile_num,
                                    levels = c(1:10),
                                    labels = c("1st (Least Disadvantage)", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th","10th (Most Disadvantage)"))
 
-# volume - fully adjusted
-# vol_full_sens_estimate = ggplot(prediction_vol_full_sens, aes(x = period, y = Predicted, color = transplant_volume)) +
-#   geom_point() +
-#   geom_path(aes(group =transplant_volume))+
-#   ylim(0.1, 0.32)+
-#   labs(
-#     x = "",
-#     y = "Predicted Probability of d-LVAD at Listing",
-#     color = "Center Volume Decile",
-#     title = "Fully Adjusted"
-#   ) +
-#   scale_colour_viridis_c()+
-#   theme_minimal()+
-#   theme(legend.position = "none")
-# vol_full_sens_estimate
 
 #adi - fully adjusted
 adi_full_sens_estimate = ggplot(prediction_adi_full_sens, aes(x = period, y = Predicted, color = group)) +
   geom_point() +
   geom_path(aes(group =group))+
-  ylim(0.1, 0.31)+
   labs(
     x = "",
-    y = "Predicted Probability of LVAD at Listing",
+    y = "Predicted Probability of BTT-LVAD at Listing",
     color = "Candidate ADI Decile",
     title = "Fully Adjusted"
   ) +
@@ -1122,32 +990,46 @@ adi_full_sens_estimate = ggplot(prediction_adi_full_sens, aes(x = period, y = Pr
   theme(legend.position = "none")
 adi_full_sens_estimate
 ```
+
+
+
+```{r no missing adi sensitivity analysis}
+betas_no_missing = fixef(sens_no_missing_adi)
+or_adi_post_no_missing= exp(betas_no_missing["adi_decile_num"] +betas_no_missing["adi_decile_num:periodPost-2018 Policy"])
+set.seed(1234)
+simul <- sim(sens_no_missing_adi, 1000)
+
+adi_in_post_period <- simul@fixef[,"adi_decile_num"] + simul@fixef[,"adi_decile_num:periodPost-2018 Policy"]
+ci_adi = exp(quantile(adi_in_post_period, c(0.025, 0.975)))
+p_adi <- mean(adi_in_post_period * sign(mean(adi_in_post_period)) < 0)
+p_adi = 2 * min(p_adi, 1 - p_adi)
+
+
+or_adi_post_full_sens
+ci_adi
+p_adi
+```
+
+```{r only continuous flow sensitivity analysis}
+betas_cont_flow = fixef(sens_continuous_flow_only)
+or_adi_post_cont_flow= exp(betas_cont_flow["adi_decile_num"] +betas_cont_flow["adi_decile_num:periodPost-2018 Policy"])
+set.seed(1234)
+simul <- sim(sens_continuous_flow_only, 1000)
+
+adi_in_post_period <- simul@fixef[,"adi_decile_num"] + simul@fixef[,"adi_decile_num:periodPost-2018 Policy"]
+ci_adi = exp(quantile(adi_in_post_period, c(0.025, 0.975)))
+p_adi <- mean(adi_in_post_period * sign(mean(adi_in_post_period)) < 0)
+p_adi = 2 * min(p_adi, 1 - p_adi)
+
+
+or_adi_post_full_sens
+ci_adi
+p_adi
+```
+
 # Figure 3
 
 ```{r - formating prediction plots}
-# prediction_legend_vol = prediction_vol_min |>
-#   ggplot(aes(x = period, y = Predicted, color = transplant_volume))+
-#   geom_point()+
-#   labs(color = "Center Volume\n(Transplants per year)")+
-#   scale_colour_viridis_c()+
-#   theme_classic()+
-#   theme(axis.text=element_text(size=20),
-#         legend.text = element_text(size=10))
-# vol_legend <- cowplot::get_legend(prediction_legend_vol)
-# 
-# 
-# vol_preds = ggdraw() +
-#   draw_plot(plot_grid(vol_min_estimate, vol_full_sens_estimate,
-#                       align = "hv", axis = "l",
-#                       labels = c("C", "D"),
-#                       ncol = 2)) +
-#   theme(plot.background = element_rect(fill = "white", color = NA))
-# 
-# vol_preds = ggdraw() +
-#   draw_plot(plot_grid(vol_preds, vol_legend,
-#                       align = "h", axis = "l",
-#                       nrow = 1, rel_widths = c(7,1.5))) +
-#   theme(plot.background = element_rect(fill = "white", color = NA))
 
 prediction_legend_adi = prediction_adi_min |> 
   ggplot(aes(x = period, y = Predicted, color = group))+ 
@@ -1173,15 +1055,8 @@ adi_preds = ggdraw() +
                       nrow = 1, rel_widths = c(7,1.5))) +
   theme(plot.background = element_rect(fill = "white", color = NA))
 
-# combined_pred = ggdraw()+
-#   draw_plot(plot_grid(adi_preds, vol_preds, 
-#                       align = "h", axis = "l",
-#                       nrow = 2)) +
-#   theme(plot.background = element_rect(fill = "white", color = NA))
 
-#ggsave("volume_pred_plot.png", vol_preds, width = 12, height = 4)
-ggsave("adi_pred_plot.png", adi_preds, width = 12, height = 4)
-#ggsave("combined_pred_plot.png", combined_pred, width = 12, height= 8)
+ggsave("adi_pred_plot.tiff", adi_preds, width = 12, height = 4)
 ```
 
 
@@ -1214,12 +1089,126 @@ save_df_as_html <- function(data, file_name) {
   # Inform the user
   message("HTML table saved as ", file_name)
 }
+```
 
+
+```{r}
 tidy_min = tidy(model_min, conf.int=TRUE, effects = "fixed")
 tidy_full =tidy(full_sens, conf.int=TRUE, effects = "fixed")
+tidy_factor = tidy(full_adi_factor, conf.int = T, effects = "fixed")
+tidy_sens_no_missing = tidy(sens_no_missing_adi, conf.int = T, effects = "fixed")
+tidy_sens_continuous = tidy(sens_continuous_flow_only, conf.int = T, effects = "fixed")
 save_df_as_html(tidy_min, "table_unadjusted.html") # Supplemental Table 2
 save_df_as_html(tidy_full, "table_fully_adjusted.html") # Supplemental Table 3
+save_df_as_html(tidy_factor, "table_adi_factor.html")
+save_df_as_html(tidy_sens_no_missing, "sens_table_no_missing_adi.html")
+save_df_as_html(tidy_sens_continuous, "sens_table_continuous_flow_only.html")
 
+
+```
+
+# Number of listed candidates by decile in each policy period
+```{r candidates per decile by policy period}
+decile_by_period <- heart_cohort %>%
+  group_by(adi_decile_factor, period) %>%   # Group by decile and durable_LVAD
+  dplyr::summarize(count = n(), .groups = "drop") %>% # Count occurrences within each group
+  as.data.frame() %>%  # Convert to a data frame (optional)
+  ungroup() |> 
+  dplyr::select(adi_decile_factor, period, count) |> 
+  mutate(adi_decile_factor = factor(adi_decile_factor, labels = c("1st\n(Least Disadvantage)", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th","10th\n(Most Disadvantage)")))
+
+# Bar graph  
+decile_by_period_plot <- 
+  ggplot(decile_by_period, aes(x = adi_decile_factor, y = count, fill = period)) + 
+  geom_col(position = "dodge") + 
+  labs(
+       x = "ADI Decile", 
+       y = "Number of Listed Candidates",  
+       fill = "Policy Period") + 
+  theme_minimal()+
+  theme(axis.title = element_text(size = 14), 
+        axis.text = element_text(size = 13),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12))+
+  scale_fill_viridis_d()
+decile_by_period_plot
+
+ggsave("decile_by_period.tiff", decile_by_period_plot, width = 10, height = 7)
+
+
+
+```
+
+
+```{r}
+heart_cohort = heart_cohort |> 
+  mutate(
+    PVR = (CAN_PULM_ART_MEAN - CAN_PCW_MEAN)/CAN_CARDIAC_OUTPUT,
+    missing_PVR = ifelse(is.na(PVR),1,0)
+  )
+
+test = heart_cohort |> filter(missing_PVR == 1)
+
+set.seed(1234)
+sens_pvr <- glmer(dlvad ~ 
+                    transplant_volume  + adi_decile_num + period + adi_decile_num*period+ transplant_volume*period + competitive_opo+ CAN_AGE_AT_LISTING+ CAN_GENDER+  can_race + CAN_ETHNICITY_SRTR+ CAN_HGT_CM + CAN_WGT_KG + multi_listed + period + education + insurance + diagnosis + blood_type + initial_status + COVID + prior_cardiac_surg + CAN_IV_INOTROP + functional_status + PVR + (1 | CAN_LISTING_CTR_CD), 
+                  data = filter(heart_cohort, missing_PVR == 0), 
+                  family = "binomial",
+                  control = glmerControl(optimizer = "bobyqa")) 
+sens_pvr |> tbl_regression(exp = T)
+
+betas_pvr = fixef(sens_pvr)
+or_adi_post_pvr= exp(betas_pvr["adi_decile_num"] +betas_pvr["adi_decile_num:periodPost-2018 Policy"])
+set.seed(1234)
+simul <- sim(sens_pvr, 1000)
+
+adi_in_post_period <- simul@fixef[,"adi_decile_num"] + simul@fixef[,"adi_decile_num:periodPost-2018 Policy"]
+ci_adi = exp(quantile(adi_in_post_period, c(0.025, 0.975)))
+p_adi <- mean(adi_in_post_period * sign(mean(adi_in_post_period)) < 0)
+p_adi = 2 * min(p_adi, 1 - p_adi)
+
+
+or_adi_post_pvr
+ci_adi
+p_adi
+tidy_pvr = tidy(sens_pvr, conf.int = T, effects = "fixed")
+save_df_as_html(tidy_pvr, "table_pvr.html")
+```
+
+```{r}
+library(rms)
+
+full_adi_rcs <- glmer(dlvad ~ 
+                    transplant_volume  + rcs(mean_adi,4) + period + rcs(mean_adi,4)*period+ transplant_volume*period + competitive_opo+ CAN_AGE_AT_LISTING+ CAN_GENDER+  can_race + CAN_ETHNICITY_SRTR+ CAN_HGT_CM + CAN_WGT_KG + multi_listed + period + education + insurance + diagnosis + blood_type + initial_status + COVID + prior_cardiac_surg + CAN_IV_INOTROP + functional_status + (1 | CAN_LISTING_CTR_CD), 
+                  data = heart_cohort, 
+                  family = "binomial",
+                  control = glmerControl(optimizer = "bobyqa"))
+
+full_adi_rcs |> tbl_regression(exp = T)
+
+
+prediction_adi_rcs = estimate_expectation(full_adi_rcs, by = c("period", "mean_adi = c(5,15,25,35,45,55,65,75,85,95)", "functional_status = 'Poor'", "initial_status = c('Status 1B', 'Status 4')")) |> 
+  relocate(Predicted)
+
+prediction_adi_rcs = prediction_adi_rcs |> filter((period == "Pre-2018 Policy" & initial_status == "Status 1B") | (period == "Post-2018 Policy" & initial_status == "Status 4"))
+
+#adi - fully adjusted
+adi_rcs_estimate = ggplot(prediction_adi_rcs, aes(x = period, y = Predicted, color = mean_adi)) +
+  geom_point() +
+  geom_path(aes(group =mean_adi))+
+  labs(
+    x = "",
+    y = "Predicted Probability of BTT-LVAD at Listing",
+    color = "ADI Percentile",
+    title = "Fully Adjusted"
+  ) +
+  theme_minimal()+
+  scale_colour_viridis_c()
+adi_rcs_estimate
+
+ggsave("adi_rcs_plot.tiff", adi_rcs_estimate, width = 5, height = 5)
+tidy_rcs = tidy(full_adi_rcs, conf.int = T, effects = "fixed")
+save_df_as_html(tidy_rcs, "table_adi_rcs.html")
 
 ```
 
