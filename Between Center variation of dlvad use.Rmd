@@ -302,7 +302,6 @@ imputations <- comparison %>%
     adi_diff = sum(is.na(mean_adi_new) != is.na(mean_adi_orig), na.rm = TRUE),
     adi_percent = adi_diff / nrow(cand_thor))
 imputations
-rm(cand_thor2)
 
 # Split Percentiles into Deciles
 cand_thor <- cand_thor %>% 
@@ -569,6 +568,7 @@ heart_cohort = heart_cohort %>% mutate(
 heart_cohort$CAN_HGT_CM[is.na(heart_cohort$CAN_HGT_CM)] <-median(heart_cohort$CAN_HGT_CM, na.rm=T)
 heart_cohort$CAN_WGT_KG[is.na(heart_cohort$CAN_WGT_KG)] <-median(heart_cohort$CAN_WGT_KG, na.rm=T)
 heart_cohort$CAN_AGE_AT_LISTING[is.na(heart_cohort$CAN_AGE_AT_LISTING)]<- median(heart_cohort$CAN_AGE_AT_LISTING, na.rm=T)
+
 ```
 
 ```{r}
@@ -852,6 +852,7 @@ arrow_plots_full_no_vol
 ggsave("arrow_plot_no_vol.tiff", arrow_plots_full_no_vol, width = 12, height = 3.5)
 
 ```
+
 # Mixed-effects logistic regression model with a random center intercept
 
 center covariate justification
@@ -1209,6 +1210,50 @@ adi_rcs_estimate
 ggsave("adi_rcs_plot.tiff", adi_rcs_estimate, width = 5, height = 5)
 tidy_rcs = tidy(full_adi_rcs, conf.int = T, effects = "fixed")
 save_df_as_html(tidy_rcs, "table_adi_rcs.html")
+
+```
+
+```{r adi multiple imputation}
+set.seed(1234)
+library(mice)
+
+comparison = comparison |> 
+  filter(PX_ID %in% heart_cohort$PX_ID) |> 
+  mutate(need_imputation = ifelse(is.na(mean_adi_new) != is.na(mean_adi_orig), 1, 0)) |> 
+  distinct(PX_ID, need_imputation, .keep_all = T)
+heart_cohort_modelvaronly = heart_cohort |> dplyr::select(transplant_volume  , adi_decile_num , period , competitive_opo, CAN_AGE_AT_LISTING, CAN_GENDER,  can_race , CAN_ETHNICITY_SRTR, CAN_HGT_CM , CAN_WGT_KG , multi_listed , period , education , insurance , diagnosis , blood_type , initial_status , COVID , prior_cardiac_surg , CAN_IV_INOTROP , functional_status, CAN_LISTING_CTR_CD, dlvad, PX_ID)
+
+heart_cohort_modelvaronly = left_join(heart_cohort_modelvaronly, dplyr::select(comparison, PX_ID, need_imputation), by = "PX_ID") |> 
+  mutate(adi_decile_num = ifelse(need_imputation == 1, NA, adi_decile_num))
+heart_cohort_modelvaronly = heart_cohort_modelvaronly |> dplyr::select(-PX_ID)
+
+test = heart_cohort_modelvaronly |> filter(need_imputation == 1)
+
+imputed_adi = mice(heart_cohort_modelvaronly,m=5,meth='pmm',seed=1234)
+imputed_adi = complete(imputed_adi)
+sens_impute <- glmer(dlvad ~ 
+                    transplant_volume  + adi_decile_num + period + adi_decile_num*period+ transplant_volume*period + competitive_opo+ CAN_AGE_AT_LISTING+ CAN_GENDER+  can_race + CAN_ETHNICITY_SRTR+ CAN_HGT_CM + CAN_WGT_KG + multi_listed + period + education + insurance + diagnosis + blood_type + initial_status + COVID + prior_cardiac_surg + CAN_IV_INOTROP + functional_status + (1 | CAN_LISTING_CTR_CD), 
+                  data = imputed_adi, 
+                  family = "binomial",
+                  control = glmerControl(optimizer = "bobyqa")) 
+
+betas_impute = fixef(sens_impute)
+or_adi_post_impute= exp(betas_impute["adi_decile_num"] +betas_impute["adi_decile_num:periodPost-2018 Policy"])
+set.seed(1234)
+simul <- sim(sens_impute, 1000)
+
+adi_in_post_period <- simul@fixef[,"adi_decile_num"] + simul@fixef[,"adi_decile_num:periodPost-2018 Policy"]
+ci_adi = exp(quantile(adi_in_post_period, c(0.025, 0.975)))
+p_adi <- mean(adi_in_post_period * sign(mean(adi_in_post_period)) < 0)
+p_adi = 2 * min(p_adi, 1 - p_adi)
+
+
+or_adi_post_impute
+ci_adi
+p_adi
+
+tidy_sens_impute = tidy(sens_impute, conf.int = T, effects = "fixed")
+save_df_as_html(tidy_sens_impute, "table_multiple_imputation_adi.html")
 
 ```
 
